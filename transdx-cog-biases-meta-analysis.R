@@ -3,7 +3,7 @@
 # 2023
 
 # Install packages ----
-packages <- c( "dplyr", "meta", "metafor", "netmeta", "readxl", "rgl", "reshape2", "writexl")
+packages <- c( "dplyr", "ggplot2", "meta", "metafor", "netmeta", "readxl", "rgl", "reshape2", "stringr", "writexl")
 
 ipak <- function(pkg){
   new.pkg <- pkg[!(pkg %in% installed.packages()[, "Package"])]
@@ -88,6 +88,8 @@ save(sx, file="symptoms-data.R")
 
 # M1: Traditional meta-analysis on all patients versus controls on all biases ---- 
 
+load('control-pairwise-data.R')
+
 ## Overall meta-analysis w/ risk of bias subgroups # more appropriate to do multivariate here
 m1 <- metacont(n1, mean1, sd1,
                n2, mean2, sd2, 
@@ -96,12 +98,13 @@ m1 <- metacont(n1, mean1, sd1,
                sm = "SMD",
                studylab='Citation_unique',
                random = TRUE,
-               subgroup = JBI_category, 
+               #subgroup = JBI_category, 
                tau.common = FALSE,
                title = "Transdiagnostic Cognitive Biases - Patient vs. control")
 
 sink(file="M1-pt-vs-con.txt", type = "output")
 m1
+eggers.test(m1)
 sink()
 
 ## Subgroup analyses
@@ -126,6 +129,8 @@ dev.off()
 
 # M2: Network meta-analysis on diagnostic groups ----
 
+load('full-pairwise-data.R')
+
 ## merge ANXa & ANXb to AD / CONLR to CON / SZd SZnd SZh SZnh PSY to SZ / 
 dat <- pw_rev %>%
   mutate_at(vars(c("treat1", "treat2")), ~ str_replace(., "ANXa","AD")) %>%
@@ -137,101 +142,106 @@ dat <- pw_rev %>%
   mutate_at(vars(c("treat1", "treat2")), ~ str_replace(., "SZnh","SZ")) %>%
   mutate_at(vars(c("treat1", "treat2")), ~ str_replace(., "PSY","SZ"))
 
-## Filter (to do - loop)
-nma <- dat %>%
-  filter(bias_category == "ATT")
-nma$esid <- ave(nma$Citation, nma$Citation, FUN=seq_along)
-nma$study <- paste(nma$Citation, nma$esid)
-nma <- nma[nma$treat1 != nma$treat2, ]
+#biases <- c("ATT","MEM","INT")
+#for(b in biases){
+  b = "INT"
+  ## filter
+  rm(nma)
+  nma <- dat %>%
+    filter(bias_category == b)
+  nma$esid <- ave(nma$Citation, nma$Citation, FUN=seq_along)
+  nma$study <- paste(nma$Citation, nma$esid)
+  nma <- nma[nma$treat1 != nma$treat2, ]
+  nma$bias_category
 
-### NMA
-m.netmeta <- netmeta(TE = TE,
-                     seTE = seTE,
-                     treat1 = treat1,
-                     treat2 = treat2,
-                     studlab = study,
-                     data = nma,
-                     sm = "SMD",
-                     fixed = TRUE,
-                     random = TRUE,
-                     reference.group = "CON",
-                     details.chkmultiarm = TRUE,
-                     sep.trts = " vs ")
-
-sink(file=paste("M2-nma-summary-ATT.txt", sep=""), type = "output")
-summary(m.netmeta)
-sink()
-
-# decomp.design(m.netmeta) # Used to double-check if a random effects model should be used - it should.
-
-## Graph figure
-  ### 2d
+  ### NMA
+  m.netmeta <- netmeta(TE = TE,
+                       seTE = seTE,
+                       treat1 = treat1,
+                       treat2 = treat2,
+                       studlab = study,
+                       data = nma,
+                       sm = "SMD",
+                       fixed = FALSE,
+                       random = TRUE,
+                       reference.group = "CON",
+                       details.chkmultiarm = TRUE,
+                       sep.trts = " vs ")
+  
+  sink(file=paste("M2-nma-summary-", b, ".txt", sep=""), type = "output")
+  summary(m.netmeta)
+  sink()
+  
+  ## Graph figure
   netgraph(m.netmeta,
            cex=1.25,
            offset=0.025,
            labels = m.netmeta$trts)
-  ### 3d
-  #netgraph(m.netmeta, dim = "3d")
-
-## Direct & indirect evidence
-d.evidence <- direct.evidence.plot(m.netmeta)
-plot(d.evidence)
-
-## Effect estimate table
-result.matrix <- m.netmeta$TE.random
-#result.matrix <- round(result.matrix, 2)
-#result.matrix[lower.tri(result.matrix, diag = FALSE)] <- NA
-r <- result.matrix
-
-# Heatmap 
-# Dummy data
-x <- paste(c("AD","AN","BDD","BN","CON","DID","GAD","HA","MDD","OCD","PD","SAD")) # ATT
-x <- paste(c("AD","CON","HA","MDD","OCD","PD","SAD","SZ")) # MEM
-x <- paste(c("AD","AN","BN","BP","CON","GAD","HA","MDD","OCD","PD","PTSD","SAD","SD","SZ")) # INT
-y <- x
-
-melted_cormat <- melt(r)
-
-ggplot(melted_cormat, aes(Var1, ordered(Var2, levels = rev(sort(unique(Var2)))))) +   
-  geom_tile(aes(fill = value)) +
-  scale_fill_gradient2(low = "darkblue",
-                       mid = "white",
-                       high = "darkred") +
-  theme(text = element_text(size = 16)) +
-  xlab("") +
-  ylab("")
-
-## Produce effect table
-netleague <- netleague(m.netmeta, 
-                       bracket = "(", # use round brackets
-                       digits=2)      # round to two digits
-
-## Save results (here: the ones of the fixed-effect model)
-write.csv(netleague$fixed, paste("M2-nma-netgraph-", bias, "-netleague.csv", sep=""))
-
-## Ranking
-netrank(m.netmeta, common=FALSE, small.values = "bad")
-
-## Forest
-forest(m.netmeta, 
-       reference.group = "CON",
-       xlim = c(-1.5, 1.5),
-       smlab = bias,
-       drop.reference.group = TRUE,
-       label.left = "Shows no bias",
-       label.right = "Shows bias",
-       labels = m.netmeta$trts)
-
-## Heatmap
-netheat(m.netmeta, random = TRUE)
-
-## Net splitting
-netsplit(m.netmeta)
-
-## Network splitting - forest
-netsplit(m.netmeta) %>% forest()
+  
+  ## Direct & indirect evidence
+  d.evidence <- direct.evidence.plot(m.netmeta, random=TRUE)
+  plot(d.evidence)
+  
+  ## Effect estimate table
+  result.matrix <- m.netmeta$TE.random
+  #result.matrix <- round(result.matrix, 2)
+  #result.matrix[lower.tri(result.matrix, diag = FALSE)] <- NA
+  r <- result.matrix
+  
+  # Heatmap 
+  # Dummy data
+  x <- paste(c("AD","AN","BDD","BN","CON","DID","GAD","HA","MDD","OCD","PD","SAD")) # ATT
+  x <- paste(c("CON","MDD","SAD")) # MEM
+  x <- paste(c("AD","AN","BN","BP","CON","GAD","HA","MDD","OCD","PD","PTSD","SAD","SD","SZ")) # INT
+  y <- x
+  
+  melted_cormat <- melt(r)
+  
+  ggplot(melted_cormat, aes(Var1, ordered(Var2, levels = rev(sort(unique(Var2)))))) +   
+    geom_tile(aes(fill = value)) +
+    scale_fill_gradient2(low = "darkblue",
+                         mid = "white",
+                         high = "darkred") +
+    theme(text = element_text(size = 16)) +
+    xlab("") +
+    ylab("")
+  
+  ## Produce effect table
+  netleague <- netleague(m.netmeta, 
+                         bracket = "(", # use round brackets
+                         digits=2, # round to two digits
+                         common = FALSE)      
+  
+  ## Save results (here: the ones of the fixed-effect model)
+  write.csv(netleague$fixed, paste("M2-nma-netgraph-", b, "-random-netleague.csv", sep=""))
+  
+  ## Ranking
+  #netrank(m.netmeta, common=FALSE, small.values = "bad")
+  
+  ## Forest
+  forest(m.netmeta, 
+         reference.group = "CON",
+         xlim = c(-1.5, 1.5),
+         smlab = b,
+         drop.reference.group = TRUE,
+         label.left = "Shows no bias",
+         label.right = "Shows bias",
+         labels = m.netmeta$trts)
+  
+  ## Heatmap
+  netheat(m.netmeta, random = TRUE)
+  
+  # ## Net splitting
+  # netsplit(m.netmeta)
+  # 
+  # ## Network splitting - forest
+  # netsplit(m.netmeta) %>% forest()
+#}
 
 # M3: Traditional meta-analysis on symptom associations with cognitive biases ----
+
+load('symptoms-data.R')
+
 ## Overall Symptoms
 m3a <- metacor(corr, n_cor, 
               comb.random = T,
@@ -239,12 +249,16 @@ m3a <- metacor(corr, n_cor,
               sm = "ZCOR",
               studylab='Citation_unique',
               random = TRUE,
-              subgroup = JBI_category, 
+              #subgroup = JBI_category, 
               tau.common = FALSE,
               title = "Transdiagnostic Cognitive Biases - Symptom Associations")
+
 sink(file="M3-sx-assocs.txt", type = "output")
 m3a
+eggers.test(m3a)
 sink()
+
+forest(m3a)
 
 ## Subgroup analyses
 ### Bias categories (ATT, MEM, INT)
